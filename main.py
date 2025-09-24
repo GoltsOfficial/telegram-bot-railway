@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, Router
@@ -7,6 +8,14 @@ from aiogram.filters import Command
 load_dotenv()
 
 router = Router()
+
+# Тарифы с ценами в рублях
+TARIFFS = {
+    "1 месяц": {"months": 1, "price": 100, "description": "Размещение на 1 месяц"},
+    "3 месяца": {"months": 3, "price": 250, "description": "Размещение на 3 месяца"},
+    "6 месяцев": {"months": 6, "price": 450, "description": "Размещение на 6 месяцев"},
+    "1 год": {"months": 12, "price": 800, "description": "Размещение на 1 год"}
+}
 
 
 @router.message(Command("start"))
@@ -25,6 +34,72 @@ async def cmd_start(message: types.Message):
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer("/start - начать\n/help - помощь")
+
+
+@router.message(lambda message: message.web_app_data)
+async def handle_web_app_data(message: types.Message):
+    try:
+        data = json.loads(message.web_app_data.data)
+        plan_name = data.get('plan')
+        user_id = data.get('user_id')
+
+        if plan_name not in TARIFFS:
+            await message.answer("❌ Ошибка: тариф не найден")
+            return
+
+        tariff = TARIFFS[plan_name]
+
+        # Создаем кнопку оплаты через ЮКассу
+        prices = [types.LabeledPrice(label=plan_name, amount=tariff["price"] * 100)]  # в копейках
+
+        await message.answer_invoice(
+            title=f"Реклама в паблике - {plan_name}",
+            description=tariff["description"],
+            provider_token="381764678:TEST:87885",  # Токен тестового режима ЮКассы
+            currency="RUB",
+            prices=prices,
+            payload=json.dumps({
+                "plan": plan_name,
+                "months": tariff["months"],
+                "user_id": user_id
+            }),
+            start_parameter="create_invoice"
+        )
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        await message.answer("❌ Произошла ошибка при обработке заказа")
+
+
+# Обработка успешной оплаты
+@router.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
+    await pre_checkout_query.answer(ok=True)
+
+
+@router.message(lambda message: message.successful_payment)
+async def process_successful_payment(message: types.Message):
+    try:
+        payload = json.loads(message.successful_payment.invoice_payload)
+        plan_name = payload.get('plan')
+        months = payload.get('months')
+        user_id = payload.get('user_id')
+
+        # Сообщение об успешной оплате
+        success_text = (
+            f"✅ **Спасибо за заказ!**\n\n"
+            f"**Тариф:** {plan_name}\n"
+            f"**Срок:** {months} месяцев\n"
+            f"**Сумма:** {message.successful_payment.total_amount // 1} руб.\n\n"
+            f"С вами свяжутся для уточнения деталей размещения.\n"
+            f"ID заказа: {user_id}"
+        )
+
+        await message.answer(success_text, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"Ошибка оплаты: {e}")
+        await message.answer("✅ Оплата прошла успешно! Спасибо за заказ.")
 
 
 async def main():
